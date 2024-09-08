@@ -1,0 +1,1026 @@
+---
+title: "B站科普区UP主及视频数据分析"
+coins: "21011789-徐丽"
+date: "`r Sys.Date()`" #自动更新日期
+output:
+  rmdformats::readthedown:
+  self_contained: true
+  thumbnails: true
+  lightbox: true
+  gallery: false
+  highlight: tango
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# 业务问题
+
+**1.IFL模型、K-means聚类**
+
+  为了深入了解B站科普区UP主的受欢迎程度，使用IFL模型来对UP主进行打分，并使用K-means聚类进行UP主的分类。IFL模型可以通过对UP主的指标进行评估和打分，包括互动率、更新周期、平均喜爱率。使用K-means聚类可以将评分较高且具有相似特征的UP主进行分组，以便更好地挖掘出受欢迎的UP主类型。通过比较和分析IFL模型和K-means聚类的结果，挖掘发现不同类型的受欢迎UP主的共同特征和优势，从而为UP主提供相关建议。
+
+**2.关联规则、词云图**
+  
+  关联规则分析可以探索高质量UP主视频标题的特点和关联性，发现哪些关键词或关键短语在高质量UP主的视频标题中更常见，并了解它们之间的关系。此外，通过生成词云图，将高频关键词以视觉化的方式呈现出来，更直观地理解UP主视频标题的特点和内容倾向。
+  
+**3.LDA模型**
+
+ 将UP主的视频弹幕数据作为文本数据输入到LDA模型中，通过分析模型输出的主题分布，可以了解到高质量UP主视频中的主要内容和热门话题。这有助于了解观众对什么样的主题感兴趣，以及UP主在哪些领域有优势，从而为UP主提供相关建议。
+
+**总结**
+
+  通过以上分析方法，可以从UP主类型、视频标题和弹幕主题等多个方面，得出有关高质量UP主的洞察，并为UP主提供相关建议。这些建议可以有助于UP主提高内容质量、吸引更多观众、培养粉丝群体和提升受欢迎度。
+
+
+# 数据处理
+
+## 导入数据
+
+  导入数据，查看描述性统计信息。
+```{r echo=FALSE}
+library("readxl")
+data0 <- read_excel("C:\\Users\\86187\\Desktop\\bs.xlsx")
+summary(data0)
+```
+
+ **本数据集data包括6756条数据，14个字段，变量解释如下：**
+
+|字段 |解释 |类型 |
+|:--|:--|:--|
+|分区|数据均为科普区数据|字符串|
+|bv|能够唯一标识视频的ID|字符串|
+|author|视频作者|字符串|
+|date|视频发布日期|字符串|
+|url|视频网址|字符串|
+|title|视频标题|字符串|
+|coins|视频收到的硬币数|数字|
+|danmu|视频弹幕数量|数字|
+|favorite|视频收藏量|数字|
+|likes|视频收到的点赞数|数字|
+|replay|视频收到的评论|数字|
+|share|视频被分享的次数|数字|
+|view|视频播放量|数字|
+
+
+## 数据清洗
+
+**检查数据格式**
+
+  返回结果显示数据包括tibble、tbl、data.frame三种形式，将数据统一为data.frame的数据形式。
+```{r echo=TRUE}
+class(data0)
+```
+```{r include=FALSE}
+data1 <- as.data.frame(data0)
+```
+
+**处理缺失值**
+
+  从数据返回结果看，缺失数据为2，占比较小，直接删除缺失行。
+```{r include=FALSE}
+sum(is.na(data1))
+library(mice)
+```
+
+```{r echo=FALSE, warning=FALSE, r,results='hide'}
+par(mfrow = c(1, 1))
+md.pattern(data1, plot = TRUE)
+
+```
+```{r include=FALSE}
+data2 <- data1[complete.cases(data1), ]
+```
+
+
+## 筛选UP主
+
+**为了保证分析的有效性，只保留发布视频大于5次的UP主，删除排除最早和最晚发布日期相同的作者**
+
+  发布视频小于或等于5次的UP主——不够活跃、缺乏稳定性
+  最早和最晚发布日期相同的作者——缺乏精心制作、内容匮乏或重复、忽视后期调整和反馈
+
+  共筛选出4894条有效数据，包含221位UP主。
+
+```{r include=FALSE}
+# 加载dplyr库
+library(dplyr)
+
+# 根据author分组并计算每个作者的视频发布次数
+count <- data2 %>% group_by(author) %>% summarise(times = n())
+
+# 保留视频发布次数大于5次的作者
+filtered_data <- data2 %>% filter(author %in% count$author[count$times > 5])
+
+```
+
+
+```{r include=FALSE}
+# 将时间格式转换为日期格式，并只保留年月日
+filtered_data$date <- as.Date(filtered_data$date)
+
+# 计算最晚和最早发布日期
+last <- filtered_data %>%
+  group_by(author) %>%
+  summarise(last = max(date))
+
+late <- filtered_data %>%
+  group_by(author) %>%
+  summarise(late = min(date))
+
+# 排除最早和最晚发布日期相同的作者
+valid_authors <- inner_join(last, late, by = "author") %>%
+  filter(last != late) %>%
+  select(author)
+
+# 筛选出有效的数据
+data <- filtered_data %>%
+  filter(author %in% valid_authors$author)
+
+```
+
+```{r echo=FALSE}
+
+# 输出结果
+summary(data)
+
+```
+
+
+# 描述性分析
+
+## 条形图
+
+  输出单个视频播放量和硬币数排行前十的UP主。
+  
+  从可交互条形图可以看出，有**七位UP主**同时存在单个视频播放量和硬币数前十的榜单中，初步说明这些UP的视频收到观众的喜爱。视频作者”芳斯塔芙”和“回形针PaperClip”的播放量遥遥领先，但是就材料搜集发现“回形针PaperClip”这位作者账号已注销。因此，后期将着重分析**“芳斯塔芙”**这位UP主。
+```{r warning=FALSE, include=FALSE}
+library(ggplot2)
+library(dplyr)
+library(plotly)
+```
+
+```{r echo=FALSE, fig.align='center', out.width='100%'}
+# 按照作者分组，计算播放量并按降序排序，选择前十个
+view <- data %>%
+  group_by(author) %>%
+  summarise(total_view = sum(view)) %>%
+  arrange(desc(total_view)) %>%
+  slice(1:10)
+
+# 创建可交互条形图，设置图表大小为800x600
+plot <- plot_ly(x = ~total_view, y = ~author, type = "bar", orientation = "h", data = view, marker = list(color = c("#CD9B1D", "#CD853F", "#CD950C", "#DAA520", "#CD6839", "#EE9A49", "#CD8500", "#CD661D", "#CDAD00", "#D2691E"))) %>%
+  layout(
+    title = "播放量前十的作者",
+    xaxis = list(title = "播放量", tickformat = ",d", tickfont = list(size = 16, family = "Arial",weight = "bold"), showline = TRUE, linewidth = 2),
+    yaxis = list(title = "作者", tickfont = list(size = 10, family = "Arial", color = "black", angle = -45,weight = "bold"), showline = TRUE, linewidth = 2),
+    bargap = 0.2,
+    plot_bgcolor = "#f8f9fa",
+    paper_bgcolor = "#f8f9fa",
+    font = list(family = "Arial", size = 10),
+    margin = list(l = 120, r = 20, t = 80, b = 60),
+    width = 800,  # 设置图表宽度
+    height = 600  # 设置图表高度
+  ) %>%
+  config(displayModeBar = FALSE)
+
+# 输出可交互条形图
+plot
+```
+```{r echo=FALSE}
+# 按照作者分组，计算硬币数量并按降序排序，选择前十个
+coins <- data %>%
+  group_by(author) %>%
+  summarise(total_coins = sum(coins)) %>%
+  arrange(desc(total_coins)) %>%
+  slice(1:10)
+
+# 创建可交互条形图，设置图表大小为800x600
+plot <- plot_ly(x = ~total_coins, y = ~author, type = "bar", orientation = "h", data = coins, marker = list(color = c("#CD9B1D", "#CD853F", "#CD950C", "#DAA520", "#CD6839", "#EE9A49", "#CD8500", "#CD661D", "#CDAD00", "#D2691E"))) %>%
+  layout(
+    title = "单个视频硬币数前十名的作者",
+    xaxis = list(title = "硬币数量", tickformat = ",d", tickfont = list(size = 16, family = "Arial", weight = "bold"), showline = TRUE, linewidth = 2),
+    yaxis = list(title = "作者", tickfont = list(size = 10, family = "Arial", color = "black", angle = -45, weight = "bold"), showline = TRUE, linewidth = 2),
+    bargap = 0.2,
+    plot_bgcolor = "#f8f9fa",
+    paper_bgcolor = "#f8f9fa",
+    font = list(family = "Arial", size = 10),
+    margin = list(l = 120, r = 20, t = 80, b = 60),
+    width = 800,  # 设置图表宽度
+    height = 600  # 设置图表高度
+  ) %>%
+  config(displayModeBar = FALSE)
+
+# 输出可交互条形图
+plot
+```
+
+## 热力图
+
+  选取coins、danmu、favorite、likes、replay、share、view七个指标绘制热力图。
+  
+**点赞数与硬币数、播放量**
+
+  播放量越高，点赞数越高，进而推动投币的行为。
+
+**收藏量与弹幕**
+
+  收藏量高，说明视频值得反复观看，能够有效地更新弹幕；更有用、更具启发性的弹幕也会增加视频的可学习性，两者相辅相成。
+```{r echo=FALSE, fig.align='center', out.width='100%'}
+
+data1 <- data[, 8:14]
+
+# 创建热力图
+plot <- plot_ly(z = cor(data1),
+                type = "heatmap",
+                colorscale = "WHOrYL",  # 使用白色到橙色的渐变
+                colorbar = list(title = "Correlation"),
+                x = colnames(data1),
+                y = colnames(data1),
+                hoverinfo = "z") %>%
+  layout(
+    title = "Correlation Heatmap",
+    xaxis = list(title = "Features"),
+    yaxis = list(title = "Features")
+  )
+
+# 输出可交互热力图
+plot
+
+```
+
+
+# IFL模型
+
+## 分析方法
+
+**I(Interaction_rate)**
+
+I值反映的是平均每个视频的互动率，互动率越高，表明其视频更能产生用户的共鸣，使其有话题感。
+I=(总弹幕数+总评论数)/总播放量/统计范围内视频数量
+
+**F(Frequence)**
+
+F值表示的是每个视频的平均发布周期，每个视频之间的发布周期越短，说明内容生产者创作视频的时间也就越短，创作时间太长，不是忠实粉丝的用户可能将其遗忘。
+**F=(统计范围内最晚发布视频时间-最早发布视频时间)/发布视频的数量
+
+**L(Like_rate)**
+
+L值表示的是统计时间内发布视频的平均喜爱率，平均喜爱率越大，表示视频质量越稳定，用户对up主的认可度也就越高。
+L=(点赞数X1+投币数X2+收藏数X3+分享数X4)/播放量X发布视频数
+
+## 预设人群类型
+
+|用户分类 |I值是否大于平均值 |F值是否大于平均值 |L值是否大于平均值 |解释 |
+|:--|:--|:--|:--|
+|高价值UP主|1|1|1|用户活跃高，更新周期短，视频质量高|
+|高价值拖更UP主|1|0|1|用户活跃高，更新周期长，视频质量高|
+|高质量内容高深UP主|0|1|1|用户活跃低，更新周期短，视频质量高|
+|高质量内容高深拖更UP主|0|0|1|用户活跃低，更新周期长，视频质量高|
+|轻松活跃UP主|1|1|0|用户活跃高，更新周期短，视频质量低|
+|活跃UP主|0|1|0|用户活跃低，更新周期短，视频质量低|
+|轻松UP主|1|0|0|用户活跃高，更新周期长，视频质量低|
+|成长期UP主|0|0|0|用户活跃低，更新周期长，视频质量低|
+
+
+
+## 构造F值
+
+```{r}
+F <- last %>%
+  inner_join(late, by = "author") %>%
+  left_join(data %>% group_by(author) %>% count(name = "times"), by = "author") %>%
+  filter(!is.na(times)) %>%
+  mutate(F = round(as.numeric(difftime(last, late, units = "days")) / times, 0)) %>% 
+  select(author, F)
+
+```
+
+## 构造I值
+```{r}
+# 计算弹幕交互指数I
+I <- data %>%
+  group_by(author) %>%
+  summarise(danmu = sum(danmu), replay = sum(replay), view = sum(view), count = n()) %>%
+  mutate(I = round((danmu + replay) / view / count * 100, 2)) %>%
+  select(author, I)
+
+# 将I数据集与F数据集进行内连接
+F_I <- inner_join(F, I, by = "author")
+
+```
+
+## 构造L值
+```{r}
+library(dplyr)
+
+# 计算UP主指标L
+L <- data %>%
+  group_by(author) %>%
+  summarise(L = sum(likes + coins*2 + favorite*3 + share*4) / sum(view) * 100) %>%
+  mutate(L = round(L, 2)) %>%
+  select(author, L)
+
+# 将L数据集与F_I数据集进行内连接
+IFL <- inner_join(F_I, L, by = "author") %>%
+  select(author, I, F, L)
+
+head(IFL)
+summary(IFL)
+```
+
+
+## 划分人群类型
+
+**封箱**
+
+根据summary的四分位结果进行封箱打分，将I、F、L值均划分为5类，I、L值越高，权重越高，F值反之。
+
+I值——代表了up主视频的平均评论率，这个值越大，就说明其视频越能使用户有话题，当I值越大时，分值越大。
+
+F值——视频的平均发布周期，视频需要持续的曝光度 ，所以这个值越大时，分值越小。
+
+L值——发布视频的平均喜爱率，值越大时，质量越稳定，分值也就越大。
+
+```{r}
+
+IFL$I_SCORE <- cut(IFL$I, c(0, 0.03, 0.06, 0.08, 0.1, 1000), labels = c(1, 2, 3, 4, 5), right = FALSE)
+IFL$I_SCORE <- as.numeric(as.character(IFL$I_SCORE))
+
+IFL$F_SCORE <- cut(IFL$F, c(0, 5, 11, 20, 40, 1000), labels = c(5, 4, 3, 2, 1), right = FALSE)
+IFL$F_SCORE <- as.numeric(as.character(IFL$F_SCORE))
+
+IFL$L_SCORE <- cut(IFL$L, c(0, 4.92, 8.76, 15.33, 20, 1000), labels = c(1, 2, 3, 4, 5), right = FALSE)
+IFL$L_SCORE <- as.numeric(as.character(IFL$L_SCORE))
+
+head(IFL)
+
+```
+
+**判断UP主的分值是否大于平均值**
+
+将权重与I、F、L的初始值相乘，得到最终的I、F、L评分值，判断其是否大于各自的平均值，1为大于均值，0为小于均值，添加至IFL表中。
+
+**计算人群数值**
+
+人群数值 = (IFL$I是否大于平均值 * 100) + (IFL$F是否大于平均值 * 10) + (IFL$L是否大于平均值 * 1)
+
+```{r include=FALSE}
+
+# 1为大于均值，0为小于均值
+IFL$I是否大于平均值 <- ifelse(IFL$I_SCORE >mean(IFL$I_SCORE), 1, 0)
+IFL$F是否大于平均值 <- ifelse(IFL$F_SCORE >mean(IFL$F_SCORE), 1, 0)
+IFL$L是否大于平均值 <- ifelse(IFL$L_SCORE >mean(IFL$L_SCORE), 1, 0)
+
+```
+
+```{r}
+IFL$人群数值 <- (IFL$I是否大于平均值 * 100) + (IFL$F是否大于平均值 * 10) + (IFL$L是否大于平均值 * 1)
+head(IFL)
+```
+
+## 输出人群占比
+
+**总体上**
+
+活跃up主占比最大，UP主们活跃度较高，增加了科普区的活跃度和吸引力。
+
+**高质量、高价值**
+
+总体超过半数，高价值拖更up主占比最重，高价值UP主占比最小，说明视频质量偏高，得到了观众的认可和支持，但是产出高质量的视频需要较长的时间打磨。
+
+```{r warning=FALSE, include=FALSE}
+# 定义转换函数
+transform_label <- function(x) {
+  if (x == 111) {
+    label <- '高价值up主'
+  } else if (x == 101) {
+    label <- '高价值拖更up主'
+  } else if (x == 11) {
+    label <- '高质量内容高深up主'
+  } else if (x == 1) {
+    label <- '高质量内容高深拖更up主'
+  } else if (x == 110) {
+    label <- '轻松活跃up主'
+  } else if (x == 10) {
+    label <- '活跃up主'
+  } else if (x == 100) {
+    label <- '轻松up主'
+  } else if (x == 0) {
+    label <- '成长期的up主'
+  }
+  return(label)
+}
+
+# 将转换函数应用于人群数值列
+IFL$人群类型 <- sapply(IFL$人群数值, transform_label)
+head(IFL)
+
+```
+
+```{r echo=FALSE}
+
+library(plotly)
+library(RColorBrewer)
+
+# 计算人群类型的人数占比
+cat <- IFL %>%
+  count(`人群类型`) %>%
+  mutate(`人数占比` = `n` / sum(`n`))
+
+# 定义颜色梯度的起始和结束颜色
+start_color <- "#F5DEB3"  # 米黄色
+end_color <- "#FFA500"    # 橙色
+
+# 生成8个从起始颜色到结束颜色的渐变色
+gradient_colors <- colorRampPalette(c(start_color, end_color))(8)
+
+# 创建饼图，并将渐变色应用于颜色
+pie_chart <- plot_ly(cat, labels = ~`人群类型`, values = ~`人数占比`, type = "pie",
+                     textposition = "inside",
+                     textinfo = "label+percent",
+                     marker = list(colors = gradient_colors))
+
+# 输出可交互饼图
+pie_chart
+
+
+```
+
+**高质量、高价值前十的UP主**
+```{r echo=FALSE}
+
+# 高价值
+high_value <- IFL[IFL$人群类型 == "高价值up主", ]
+rank_high_value <- high_value[, c("author", "L", "I", "F")]
+rank_high_value <- rank_high_value[order(rank_high_value$L, decreasing = TRUE), ]
+rank_high_value <- head(rank_high_value, 10)
+
+# 高价值拖更up主
+high_value_delay <- IFL[IFL$人群类型 == "高价值拖更up主", ]
+rank_high_value_delay <- high_value_delay[, c("author", "L", "I", "F")]
+rank_high_value_delay <- rank_high_value_delay[order(rank_high_value_delay$L, decreasing = TRUE), ]
+rank_high_value_delay <- head(rank_high_value_delay, 10)
+
+# 高质量内容高深up主
+high_quality_deep <- IFL[IFL$人群类型 == "高质量内容高深up主", ]
+rank_high_quality_deep <- high_quality_deep[, c("author", "L", "I", "F")]
+rank_high_quality_deep <- rank_high_quality_deep[order(rank_high_quality_deep$L, decreasing = TRUE), ]
+rank_high_quality_deep <- head(rank_high_quality_deep, 10)
+
+# 高质量内容高深拖更up主
+high_quality_deep_delay <- IFL[IFL$人群类型 == "高质量内容高深拖更up主", ]
+rank_high_quality_deep_delay <- high_quality_deep_delay[, c("author", "L", "I", "F")]
+rank_high_quality_deep_delay <- rank_high_quality_deep_delay[order(rank_high_quality_deep_delay$L, decreasing = TRUE), ]
+rank_high_quality_deep_delay <- head(rank_high_quality_deep_delay, 10)
+
+# 整合到一张表
+summary_table <- data.frame(
+  "高价值" = rank_high_value$author,
+  "高价值拖更" = rank_high_value_delay$author,
+  "高质量内容高深" = rank_high_quality_deep$author,
+  "高质量内容高深拖更" = rank_high_quality_deep_delay$author
+)
+summary_table
+
+```
+
+# K-means聚类
+
+## 标准化
+
+I值的数据范围最小，F、L值数据范围较大，在这种情况下，考虑使用标准化方法来对数据进行预处理，以消除不同特征之间的尺度差异。
+
+标准化可以使得数据的均值为0，方差为1，从而将不同特征的数据放置在相似的数值范围内。更好地比较不同特征之间的分布情况。
+```{r include=FALSE}
+library(lattice)
+library(dplyr)
+library(caret)
+```
+
+```{r echo=TRUE, warning=FALSE}
+
+# 选择需要进行标准化的列
+scale_matrix <- IFL[, 2:4] 
+
+# 进行标准化
+scaled_data <- scale(scale_matrix)
+summary(scaled_data)
+```
+
+## 查看箱线图
+
+数据的上下限较为统一，均存在较多离群值。
+
+```{r echo=FALSE}
+# 绘制箱线图
+boxplot(scaled_data, main = "Boxplot of scaled_data")
+
+# 添加横坐标和纵坐标标签
+xlabel <- c("I", "F", "L")
+ylabel <- "Scaled Value"
+title <- "Boxplot of scaled_data"
+axis(1, at = seq_along(xlabel), labels = xlabel)
+axis(2, at = pretty(range(scaled_data), n = 5), label = pretty(range(scaled_data), n = 5))
+title(main = title)
+
+```
+
+## 查看离群点
+
+经过查看离群点的信息，发现这些UP主可能是**比较优秀的UP主**，考虑将其保留，从数据集中将离群点剔除，并将其作为测试集。对剩余的数据点进行聚类分析，并记录聚类结果。对离群点进行预测，即将其归入离其最近的聚类簇中。
+
+```{r echo=FALSE}
+# 计算I值、L值和F值的上下四分位距和上下界限
+I_quartiles <- quantile(scaled_data[,"I"], c(0.25, 0.75), na.rm = TRUE)
+I_lower <- I_quartiles[1] - 1.5 * IQR(scaled_data[,"I"], na.rm = TRUE) # 计算下界限
+I_upper <- I_quartiles[2] + 1.5 * IQR(scaled_data[,"I"], na.rm = TRUE) # 计算上界限
+
+L_quartiles <- quantile(scaled_data[,"L"], c(0.25, 0.75), na.rm = TRUE)
+L_lower <- L_quartiles[1] - 1.5 * IQR(scaled_data[,"L"], na.rm = TRUE)
+L_upper <- L_quartiles[2] + 1.5 * IQR(scaled_data[,"L"], na.rm = TRUE)
+
+F_quartiles <- quantile(scaled_data[,"F"], c(0.25, 0.75), na.rm = TRUE)
+F_lower <- F_quartiles[1] - 1.5 * IQR(scaled_data[,"F"], na.rm = TRUE)
+F_upper <- F_quartiles[2] + 1.5 * IQR(scaled_data[,"F"], na.rm = TRUE)
+
+# 筛选出离群点行和对应的行索引
+I_outliers <- scaled_data[scaled_data[,"I"] < I_lower | scaled_data[,"I"] > I_upper, ]
+L_outliers <- scaled_data[scaled_data[,"L"] < L_lower | scaled_data[,"L"] > L_upper, ]
+F_outliers <- scaled_data[scaled_data[,"F"] < F_lower | scaled_data[,"F"] > F_upper, ]
+
+I_outlier_indices <- which(scaled_data[,"I"] < I_lower | scaled_data[,"I"] > I_upper)
+L_outlier_indices <- which(scaled_data[,"L"] < L_lower | scaled_data[,"L"] > L_upper)
+F_outlier_indices <- which(scaled_data[,"F"] < F_lower | scaled_data[,"F"] > F_upper)
+
+# 提取离群点行并输出信息
+I_outliers <- IFL[I_outlier_indices, ]
+L_outliers <- IFL[L_outlier_indices, ]
+F_outliers <- IFL[F_outlier_indices, ]
+
+# 删去离群点行，得到新的数据集Train
+outlier_indices <- c(I_outlier_indices, L_outlier_indices, F_outlier_indices)
+filtered_IFL <- IFL[-outlier_indices, ]
+
+train_set <- scaled_data[-c(I_outlier_indices, L_outlier_indices, F_outlier_indices), ]
+
+# 从原始数据集中删除离群点行，得到训练集
+I_test_set <- scaled_data[I_outlier_indices, ]
+L_test_set <- scaled_data[L_outlier_indices, ]
+F_test_set <- scaled_data[F_outlier_indices, ]
+
+# 输出统计信息
+cat("Number of I outliers:", nrow(I_outliers), "\n")
+head(I_outliers)
+cat("Number of L outliers:", nrow(L_outliers), "\n")
+head(L_outliers)
+cat("Number of F outliers:", nrow(F_outliers), "\n")
+head(F_outliers)
+cat("Train rows:", nrow(train_set), "\n")
+cat("Train summary:\n")
+summary(train_set)
+
+```
+
+```{r}
+View(I_outliers)
+View(F_outliers)
+View(L_outliers)
+```
+
+## 肘部图
+
+拐点为5时，数据的解释力达到了一个较好的平衡点。
+```{r echo=FALSE}
+
+# 创建聚类模型并计算SSE
+library(cluster)
+set.seed(123)
+ss <- c()
+for (k in 1:10) {
+  km <- kmeans(train_set, centers = k, nstart = 25)
+  ss[k] <- km$tot.withinss
+}
+
+# 将SSE值转化为数据框
+plot_data <- data.frame(K = 1:10, SSE = ss)
+
+# 创建交互式肘部图
+library(plotly)
+plot <- plot_ly(plot_data, x = ~K, y = ~SSE, type = "scatter", mode = "lines") %>%
+  layout(title = "The SSE Plot For Various Clusters",
+         xaxis = list(title = "Number of Clusters"),
+         yaxis = list(title = "Sum of Squared Errors"))
+
+# 显示交互式图形
+plot
+
+```
+
+## 训练模型
+
+**封装函数，添加“人群类别”标签，并链接播放量和硬币前十的UP主，训练集包括189项数据**
+
+```{r echo=TRUE}
+
+my_kmeans <- function(data, centers, filtered_data) {
+   # 使用k均值算法对数据集进行聚类
+   fit <- kmeans(data, centers = centers)
+   
+   # 将聚类标签存储在数据框中
+   cluster_labels <- data.frame(clusters = fit$cluster)
+   
+   # 合并原始数据集和聚类标签
+   merge_data <- cbind(data, cluster_labels)
+   
+   # 提取需要合并的列
+   merged_data <- cbind(filtered_data[c("author", "人群类型")], merge_data["clusters"])
+   
+   # 将结果整合到merged_data数据集中
+   merged_data <- left_join(merged_data, view,  by = "author")
+   merged_data <- left_join(merged_data, coins,  by = "author")
+   
+   # 计算每个簇的大小和占比
+   cluster_sizes <- table(merge_data$clusters)
+   cluster_props <- prop.table(cluster_sizes)
+   
+   # 显示每个簇的大小和占比
+   cluster_stats <- cbind(cluster_sizes, cluster_props)
+   
+   # 创建一个空的列表来存储聚类特征
+   cluster_features <- list()
+   
+   # 遍历每个聚类标签
+   for (line in 1:centers) {
+     # 提取该聚类标签下的数据
+     label_data <- merge_data[merge_data$clusters == line, ]
+     
+     # 计算均值
+     mean_data <- round(colMeans(label_data[, -ncol(label_data)]), 3)
+     
+     # 设置名称为聚类标签
+     names(mean_data) <- colnames(data)
+     
+     # 将均值行数据添加到聚类特征列表中
+     cluster_features[[line]] <- mean_data
+   }
+   
+   # 将聚类特征列表转化为数据框
+    cluster_pd <- do.call(rbind, cluster_features)
+   
+   # 合并聚类统计和聚类特征
+   final_output <- cbind(cluster_stats, cluster_pd)
+   
+  # 过滤 merged_data 数据集中 total_view 和 total_coins 列都有值的所有行
+ data_subset <- merged_data[!is.na(merged_data$total_view) & !is.na(merged_data$total_coins), ]
+ 
+ # 返回最终输出
+ result <- list(merged_data = data_subset, final_output = final_output)
+ return(result)
+}
+
+```
+
+**训练集结果**
+
+通过分析各类占比最终的UP类型之后，*总结*如下：
+
+|类别 |人群类型 |特点|
+|:--|:--|:--|
+|1|成长期UP主|没有较为突出的方面|
+|2|高质量内容高深（拖更）UP主|互动率好，但是更新周期较长|
+|3|拖更UP主|更新周期最长、平均喜爱率最低|
+|4|高价值高质量UP主|更新周期最短、平均喜爱率最高|
+|5|轻松活跃UP主|更新周期短，频率高|
+
+
+训练集内包含5位同时在两个榜单上的UP主，且多属于第四类，说明**最受欢迎的是第四类博主，即更新周期短，高质量内容高深的UP**。
+
+```{r include=FALSE}
+
+# 调用封装的k均值函数
+result <- my_kmeans(train_set, centers = 5, filtered_IFL)
+
+# 输出聚类结果
+print(result)
+```
+
+## 预测数据
+
+将模型应用于3个离群点组成的测试集，I_test_set、F_test_set、L_test_set。
+
+仅L_test_set测试结果中包含两位同时在榜上的UP，且依然位于3、4类UP群体。
+
+```{r echo=TRUE}
+
+# 调用封装的k均值函数
+result <- my_kmeans(I_test_set, centers = 5, I_outliers)
+
+# 输出聚类结果
+print("I_test_set预测结果：")
+print(result)
+```
+
+```{r echo=FALSE}
+
+# 调用封装的k均值函数
+result <- my_kmeans(F_test_set, centers = 5, F_outliers)
+
+# 输出聚类结果
+print("I_test_set预测结果：")
+print(result)
+
+```
+
+```{r echo=FALSE}
+
+# 调用封装的k均值函数
+result <- my_kmeans(L_test_set, centers = 5, L_outliers)
+
+# 输出聚类结果
+print("I_test_set预测结果：")
+print(result)
+
+```
+
+
+# 关联规则
+
+## 封装函数
+
+**将分析、关联规则与词云图写入到同一函数中，仅需改变author名就能查看对应视频标题的关联规则与词云图**
+
+```{r include=FALSE}
+
+library(arules)
+library(wordcloud2)
+
+```
+
+```{r}
+
+generate_wordcloud_and_rules <- function(result2, support_threshold, confidence_threshold) {
+  word.frep <- table(result2$word)
+  word.frep <- sort(word.frep, decreasing = TRUE)
+  word.frep <- data.frame(word.frep)
+
+  colors <- c("#DAA520", "#CD6839", "#CDAD00", "#EE8262", "#FFB90F", "#A4D3EE", "#96CDCD", "#A2B5CD")
+
+print(wordcloud2(word.frep[1:100,],
+                 color = colors,
+                 fontFamily = "微软雅黑",
+                 fontWeight = "bold",
+                 gridSize = 5,
+                 rotateRatio = 0.5))
+
+
+  # 将分词结果转换为交易数据对象
+  transactions <- as(split(result2$word, result2$id), "transactions")
+
+  # 运行apriori算法进行关联规则挖掘
+  rules <- apriori(transactions, parameter = list(support = support_threshold, confidence = confidence_threshold))
+
+  # 返回词云图、交易数据和关联规则
+  return(list(wordcloud = word.frep, transactions = transactions, rules = rules))
+}
+
+get_author_info <- function(author, data, support_threshold, confidence_threshold) {
+  ft <- data[data$author == author, ]
+  ft <- ft$title
+  ft <- as.character(ft)
+  ft <- gsub("[a-zA-Z0-9]", "", ft)
+  ft <- data.frame(title = ft)
+  ft <- ft[!is.na(ft)]
+  ft <- as.character(ft)
+  ft <- ft[sapply(ft, is.character)]
+
+  library(jiebaR)
+  cutter <- worker(type = "tag")
+  seg_word <- list()
+  for(i in 1:length(ft)){
+    seg_word[[i]] <- segment(ft[i], cutter)
+  }
+
+  n_word <- sapply(seg_word, length)
+  index <- rep(1:length(seg_word), n_word)
+
+  nature <- unlist(sapply(seg_word, names)) 
+  result <- data.frame(index, unlist(seg_word), nature)
+  colnames(result) <- c("id", "word","nature")
+
+  n_word <- sapply(split(result,result$id), nrow) 
+  index_word <- sapply(n_word, seq_len) 
+  index_word <- unlist(index_word)  
+  result$index_word <- index_word
+
+  result2 <- subset(result, grepl("n", result$nature) )
+
+  return(result2)
+}
+
+```
+
+## “芳斯塔芙”分析
+
+**“鬼谷”反复出现**
+
+*1.品牌认知度*
+
+统一的系列视频标题可以帮助建立品牌识别度。当观众看到标题中的特定字词或短语时，他们会马上联想到该系列视频的内容，并且产生对品牌的熟悉感。这有助于提升品牌在观众心中的形象和认可度。
+
+*2.观众期待和信任*
+
+当观众发现一个他们喜欢的系列视频标题时，他们会对该系列产生期待和信任。他们会期待该系列的每个新视频都会给他们带来有价值的内容，因此更倾向于点击观看并保持关注。观众对UP主的品牌和内容的信任也会随着时间的推移增加，因为他们知道博主能够提供他们想要的内容。
+
+*3.提高搜索引擎优化*
+
+重复的关键字或短语可以提高UP主的系列视频在搜索引擎中的排名。当观众搜索与UP主的系列相关的内容时，他们更有可能在搜索结果中看到UP的视频。这样可以增加曝光率并吸引更多的观众去点击观看UP主的系列视频。
+
+*4.帮助观众分类和筛选内容*
+
+当UP主的系列视频标题保持一致或包含相似的字眼时，观众会更容易将UP主的视频与其他类型的视频区分开来。这可以帮助观众在众多视频中快速找到自己感兴趣的内容，提高他们的观看体验。同时，观众也更容易回顾UP主的系列视频，因为他们可以根据标题中的相似字眼找到相关主题的视频。
+
+**“龙”、“动物”、“兽”频率较高**
+
+这可能说明该UP主偏向于科普相关的生物类主题，特别是与龙、动物和兽类相关的内容。通过这个分析，可以得出以下几个观察和结论：
+
+内容偏好和专业领域：频繁出现这些关键词的标题可能意味着该UP主在生物学和动物学方面有较深的兴趣和知识。这表明该UP主在科普领域中专注于探索和讲解与龙、动物和兽类相关的话题和知识。
+
+观众吸引力：由于龙和动物等生物类主题在大众中具有较高的吸引力和关注度，这些标题可能会吸引更多观众的注意和兴趣。这些话题在科普领域中是热门和受欢迎的，因此可能会吸引更多的观众点击观看UP主的视频。
+
+专业形象和内容一致性：频率较高的关键词在标题中的使用可能会强化UP主的专业形象和领域专长。这显示出UP主在特定的科普领域中有较高的专业水平，并能够在各种视频中保持一致的主题和内容。
+
+基于以上分析，UP主可以进一步利用这些观察和结论来优化和扩展自己的内容，例如：
+
+深入挖掘与龙、动物和兽类相关的更多科学知识和话题，以提供更丰富、详细和吸引人的科普内容。
+
+培养自己在这些专业领域的知名度和专业形象，通过持续的学习和研究来保持对这些话题的深入了解。
+
+通过这些方法，UP主可以在科普区建立自己独特的品牌，并吸引更多的观众关注和喜爱。
+
+**“事件”、“热潮”**
+
+关注热门话题：标题中出现的“事件”、“热潮”等词汇表明UP主倾向于关注当前的热门话题和流行事件。这意味着他们对时事和社会热点有较高的关注度，并希望通过科普视频进一步解析和解释这些话题。
+
+提供背景信息与分析：通过以“事件”、“热潮”为切入点，UP主可能会提供与这些事件或热潮相关的背景信息和详细分析。他们可能会通过科学和客观的角度来解释和分析事实，帮助观众更好地理解和解读事件或热潮背后的科学知识和现象。
+
+引发思考和讨论：“事件”、“热潮”等关键词的使用可能意味着UP主希望引发观众的思考和讨论。他们可能会提出观点和分析，鼓励观众对事件或热潮进行深入思考，并鼓励他们在评论区中留下意见和观点。这有助于建立与观众的互动和参与，进一步推动科学知识的传播和讨论。
+
+关联科学知识和现象：UP主可能会将事件或热潮与相关的科学知识和现象关联起来，以深入解释其背后的原理和影响。他们可能会介绍相关的科学概念和理论，帮助观众全面理解事件或热潮，并在科学角度上进行分析和解读。
+
+```{r echo=FALSE, warning=FALSE}
+
+# 调用函数并传入参数
+author <- "芳斯塔芙"
+support_threshold <- 0.1
+confidence_threshold <- 0.5
+result2 <- get_author_info(author = author, data = data, support_threshold = support_threshold, confidence_threshold = confidence_threshold)
+output <- generate_wordcloud_and_rules(result2 = result2, support_threshold = support_threshold, confidence_threshold = confidence_threshold)
+
+# 查看词云图、交易数据和关联规则
+inspect(output$rules)
+
+```
+
+
+## “龙女之声”分析
+
+**“龙女”反复出现**
+
+同样的，“龙女”一词在该UP主的视频标题中也反复出现，与上“鬼谷”有相同的作用。
+
+**“史诗”、“动物学”、“门”频率较高**
+
+*1.宏大的主题和发展历史*
+
+关键词“史诗”和“门”暗示了UP主关注宏大的历史和发展，可能涉及广泛的时间跨度和历史进程。这表明UP主对历史的发展和演变有浓厚的兴趣，并希望通过科普视频来展现和解释这些复杂的历史背景和内涵。
+
+*2.动物学和种族相关*
+
+关键词“动物学”和“门”指向UP主关注的主题与动物学或特定生物种族相关。它们暗示了UP主可能在生物学领域有较高的专业知识，并着重探索与动物学和特定种族相关的知识和内容。这种关注领域的特点可以使UP主在科普视频中提供深入且专注的分析，并帮助观众更好地理解和探索这些领域。
+
+*3.综合分析与跨学科探索*
+
+从关键词的频率高度来看，UP主可能倾向于综合分析和跨学科的探索。关键词“史诗”、“动物学”和“门”涉及到不同学科领域，如历史、生物学和文化研究。这表明UP主具有广泛的学科知识和兴趣，致力于将不同领域的知识融合在他们的科普视频中。这种综合分析和跨学科的探索可以提供更全面、多样化的视角，并激发观众从多个学科角度思考和理解特定主题。
+
+*这些分析结果可以为UP主提供以下建议：*
+
+进一步扩展和深化与发展历史、动物学和种族相关的主题，提供更具深度和广度的内容。
+
+增加不同学科领域的视角和分析，以跨学科的方式解读并解释相关主题。
+
+建立与观众的互动和参与，通过提问、答疑和讨论等方式促进更深入的科学思考和讨论。
+
+通过这些方法，UP主可以更好地利用其关注的宏大主题和跨学科的特点，提供独特且吸引人的科普内容，并吸引更多观众的关注和参与。
+
+**趣味性用词**
+
+该UP主擅长使用趣味性的词汇可以在标题中营造轻松愉快和有趣的氛围，吸引观众的关注并增强他们的参与度。
+
+```{r echo=FALSE, warning=FALSE}
+
+# 调用函数并传入参数
+author <- "龙女之声"
+support_threshold <- 0.05
+confidence_threshold <- 0.5
+result2 <- get_author_info(author = author, data = data, support_threshold = support_threshold, confidence_threshold = confidence_threshold)
+output <- generate_wordcloud_and_rules(result2 = result2, support_threshold = support_threshold, confidence_threshold = confidence_threshold)
+
+# 查看词云图、交易数据和关联规则
+inspect(output$rules)
+
+```
+
+# 总结
+
+## UP主类型
+
+**最受欢迎的UP主类型**
+
+最受欢迎的UP主类型通常是那些能够提供高质量内容并保持更新频率的。这些UP主不仅具备出色的制作能力，还能够给观众带来有价值且富有创意的内容。他们深入研究自己所从事的领域，并不断探索新的话题和观点，以确保他们的视频在内容上具有吸引力和独特性。
+
+为了提供高质量的内容，这些UP主通常会在制作过程中注重细节和精益求精。他们可能会投入大量时间和精力进行前期准备，包括脚本编写、摄影技巧和剪辑编辑等方面，以确保视频的质量达到或超过观众的期望。
+
+此外，保持更新频率也是他们成功的关键因素之一。他们会制定合理的发布计划，确保视频定期发布，以保持观众的兴趣和参与度。通过坚持定期更新，这些UP主能够建立起观众的忠诚度，并让观众产生期待和追随的心态。
+
+这些最受欢迎的UP主还能够与观众建立起积极的互动关系。他们会尽量回复评论、参与社交媒体互动，并定期与观众进行直播或线下见面活动。通过与观众的互动，他们能够更好地了解观众的需求和反馈，进而改进自己的内容创作。
+
+**给拖更UP主的建议**
+
+对于经常拖更的UP主，建议他们制定时间表和计划，并以此来管理自己的时间和提高效率。UP主可以根据自己的情况，制定出合理的发布计划，按照既定的时间节点进行制作、剪辑和发布等工作。这样一来，UP主就可以更好地掌控自己的工作进度，避免因为拖延而导致视频更新频率过低的情况。
+
+此外，UP主也可以寻求合作和分工，将一些工作交给其他人来完成，从而减轻自身的压力。UP主可以与其他UP主或制作人员合作，共同完成一些视频的制作工作，如剪辑、音频处理等。通过这种方式，UP主可以将自己的精力集中在自己擅长的领域，提高视频的质量和频率。
+
+与观众的互动关系也是UP主需要关注的重点之一。UP主可以积极回复评论，参加社交媒体互动，定期进行直播等活动，以增强与观众的互动关系。通过积极地与观众互动，UP主可以更好地了解观众的需求和反馈，从而不断改进自己的内容创作和制作技巧。
+
+**给活跃UP主的建议**
+
+首先，保持较高的互动率是非常重要的。UP主可以积极回复观众的评论，与观众进行互动交流，参加社交媒体的讨论和互动活动等。这种互动可以增强与观众之间的连接，并建立起更加紧密的关系。UP主还可以定期举办直播活动，与观众面对面地交流，回答他们的问题，分享自己的心得和经验。通过保持高水平的互动率，UP主能够增加观众的参与度和忠诚度，进一步扩大自己的影响力。
+
+其次，探索新的领域和内容类型也是UP主需要关注的重点之一。UP主可以不断尝试新的创意和概念，探索自己感兴趣的新领域，并将其融入到自己的视频内容中。这样做不仅可以为观众带来新鲜感和惊喜，也能够展示UP主的多样化才华和创造力。UP主可以尝试拍摄不同类型的视频，如Vlog、教程、挑战等，或者涉足到新的领域，如科技、美食、旅行等。通过不断探索新的领域和内容类型，UP主能够吸引更多不同背景和兴趣的观众，丰富自己的影响范围。
+
+此外，UP主还可以与其他UP主或制作人员进行合作，共同开展一些跨界合作项目。通过与其他具有不同专业背景和创意思维的人合作，UP主可以汲取更多的灵感和创意，实现资源的共享和互补。这种合作不仅可以提高视频的质量和创新性，也能够扩大UP主的影响力和知名度。
+
+**给成长期UP主的建议**
+
+首先，找到自己的独特定位非常重要。在竞争激烈的网络世界中，UP主需要有自己与众不同的特色和风格，以吸引观众的关注并建立自己的粉丝群体。UP主可以思考自己的兴趣、经验和特长，寻找一个独特的角度或者创造一个特殊的形象，使自己在众多UP主中脱颖而出。这样做可以帮助UP主建立起自己的品牌形象，让观众对其有深刻的印象，并持续关注和支持UP主的内容。
+
+其次，钻研专一的领域和内容类型也是UP主需要关注的重点。UP主可以选择一个自己感兴趣且擅长的领域，并在该领域内深入研究和学习，成为该领域的专家。UP主可以选择一个具有市场需求和观众喜好的内容类型，并持续地提供有价值的内容。通过在一个领域内的专一钻研，UP主可以积累更多的知识和经验，提高自身的专业水平，同时也能够建立起与观众之间的信任和共鸣。
+
+此外，提升制作技术也是UP主需要不断努力的方向之一。UP主可以学习和掌握视频拍摄、剪辑、配音等相关的制作技术，通过不断地实践和反思，逐步提高自己的制作水平。UP主可以参加相关的培训课程或者自学相关的教程，也可以向其他已经成功的UP主请教和交流，不断吸收新的知识和技巧。同时，UP主还可以关注行业的最新发展和趋势，及时更新自己的制作工具和软件，以保持自己的竞争力和创新性。
+
+## 视频标签建议
+
+**命名**
+
+在进行视频标签的命名时，保持一致的命名规则是非常重要的。通过使用统一的命名规则，可以帮助观众更容易地辨识出你的视频，并且建立起观众对于你频道的熟悉感。同时，一致的命名规则也能够给你的频道增加专业感和组织性。
+
+*当制定命名规则时，可以考虑以下几点：*
+
+*视频系列名称：*如果你经常制作一些连续性较强的视频系列，可以为这些系列统一起一个名称。这样做可以让观众更容易找到和关注你的系列视频，也有助于提高观众的黏性。
+
+*关键词：*在视频标题中使用相关的关键词，可以帮助搜索引擎更好地索引你的视频，并提高视频的曝光度。选择与你的视频内容相关的关键词，并在标题中合理地运用。
+
+此外，积极探索个人风格也是一个值得推荐的建议。作为UP主，拥有自己独特的风格和特点非常重要，这样可以让观众更容易地辨认出你的视频，并对你的内容产生兴趣和认同。个人风格可以表现在视频的拍摄手法、剪辑风格、配乐选择、画面色调等方面。你可以尝试不同的风格，并不断探索，找到最适合自己的风格。
+
+**主题**
+
+作为UP主，了解观众喜爱的主题非常重要。只有深入了解观众的需求和兴趣，才能够制作出更加符合观众口味的视频，并提高视频的质量和受欢迎度。
+
+为了探索观众喜爱的主题，UP主可以从以下几个方面入手：
+
+*视频数据分析：*通过分析视频的播放量、观看时长、点赞数、评论数等数据，可以了解观众对于视频内容的反应和喜好。根据数据结果，可以判断哪些主题受到观众的青睐，并对下一步的视频制作做出调整。
+
+*调查问卷：*制作调查问卷，了解观众的需求和兴趣。可以通过社交媒体、视频平台等渠道，向观众发起调查问卷，收集观众的意见和建议。根据调查结果，可以得到观众对于不同主题的兴趣程度，从而制作出更符合观众需求的视频。
+
+*互动交流：*通过与观众的互动交流，了解他们的需求和反馈。可以在视频中引导观众留言和评论，或者通过社交媒体、直播等方式与观众进行互动交流。通过交流，可以得到观众的直接反馈和建议，并及时调整下一步的视频制作方向。
+
+*行业分析：*对于同行业的其他UP主和视频进行分析和比较。可以了解同行业UP主的视频主题和制作风格，以及观众对于这些视频的反应。同时，也可以对比自己的视频与同行业视频的差异和优劣，从而发现自己的不足之处，不断提高视频质量和受欢迎度。
+
+**切入视角**
+
+以下是一些切入视角的建议，可以结合热点事件、传说或故事来增加吸引力和独特性：
+
+*当前科技突破：*选择当前科技领域的突破性发展作为切入点。例如，如果有关于人工智能、太空探索、量子计算等方面的新发现或研究成果，可以制作相关的科普视频并解释其背后的原理和影响。
+
+*神秘的科学现象：*选择一些神秘的科学现象作为切入点。例如，黑洞、时间旅行、宇宙起源等都是受到大众关注的话题。通过解释这些神秘现象的原理和科学解释，可以引发观众的好奇心和兴趣。
+
+*传说中的科学发明：*选择一些传说中的科学发明或发现作为切入点。例如，亚特兰蒂斯的能源晶体、古代文明的高科技、失落的知识宝库等。通过介绍这些传说中的科学发明，并讲解其真实性和可能性，可以给科普视频增添一些神秘感和趣味性。
+
+*历史上的科学突破：*选择一些历史上的科学突破作为切入点。例如，达尔文的进化论、爱因斯坦的相对论、居里夫人的放射性研究等。通过讲述这些科学家的故事，介绍他们的科学发现和贡献，可以给科普视频增加一些人文关怀和故事性。
+
+*奇闻趣事和科学知识结合：*选择奇闻趣事和科学知识相结合的切入方式。例如，通过讲解某种食物的奇特现象或者特殊功效来引入相关的科学知识，或者通过解释某种日常现象的科学原理来揭示其中的奥秘。
+
+无论选择哪种切入视角，都要确保视频内容准确、简明易懂，并能够吸引观众的兴趣。同时，也要注重视频的制作质量，包括声音、画面、配乐等方面的表现，以提升观赏体验和吸引力。
+
+**其他建议**
+
+*视频描述：*在视频描述中，尽量详细地介绍你的视频内容，并包含相关的关键词。这样能够帮助搜索引擎更好地理解你的视频，并提高搜索结果的准确性。
+
+*标签选择：*选择合适的标签也是提高视频曝光度的重要因素。标签应该与视频内容相关，并且是观众可能会搜索的关键词。同时，注意不要滥用标签，避免使用与视频内容无关或者重复的标签。
+
+*缩略图设计：*制作吸引人的缩略图同样非常重要。缩略图是观众决定是否点击观看你的视频的重要因素之一。选择清晰、有吸引力的图片，并添加合适的文字和图标，可以增加观众的点击率。
+
